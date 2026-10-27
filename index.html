@@ -693,64 +693,142 @@
         "Mrrr… 💗",
       ];
       let timer = null,
-        sadTimer = null,
         capTimer = null,
         taps = 0;
 
-      /* ============ SUARA MEONG (Web Audio, tanpa file mp3) ============ */
+      /* ============ SUARA KUCING LUCU (Web Audio, tanpa file mp3) ============ */
       let ac;
-      // pitch: tinggi nada (1 = kucing dewasa, 2 = anak kucing)
-      // len: lama suara (detik) | formant: menggeser "bentuk mulut" (makin besar = makin cempreng)
-      function meow(pitch = 1, len = 0.65, formant = 1) {
+      function audioCtx() {
+        ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+        if (ac.state === "suspended") ac.resume();
+        return ac;
+      }
+
+      // Satu "nada kucing": nadanya naik dari f0 ke puncak f1, lalu turun ke f2
+      function voice({
+        f0,
+        f1,
+        f2,
+        len,
+        peak = 0.3,
+        vib = 6,
+        vibDepth = 12,
+        trill = 0,
+        delay = 0,
+      }) {
         try {
-          ac = ac || new (window.AudioContext || window.webkitAudioContext)();
-          if (ac.state === "suspended") ac.resume();
-          const t = ac.currentTime;
+          const a = audioCtx();
+          const t = a.currentTime + delay;
 
-          // sumber suara: gelombang gergaji yang nadanya naik lalu turun ("mi-aaa-w")
-          const osc = ac.createOscillator();
-          osc.type = "sawtooth";
-          osc.frequency.setValueAtTime(420 * pitch, t);
-          osc.frequency.exponentialRampToValueAtTime(
-            820 * pitch,
-            t + len * 0.3,
-          );
-          osc.frequency.exponentialRampToValueAtTime(380 * pitch, t + len);
+          // suara utama (lembut) + suara satu oktaf di atasnya (biar berkilau imut)
+          const o1 = a.createOscillator();
+          o1.type = "triangle";
+          const o2 = a.createOscillator();
+          o2.type = "sine";
+          const g2 = a.createGain();
+          g2.gain.value = 0.35;
+          [o1, o2].forEach((o, i) => {
+            const m = i === 0 ? 1 : 2;
+            o.frequency.setValueAtTime(f0 * m, t);
+            o.frequency.exponentialRampToValueAtTime(f1 * m, t + len * 0.3);
+            o.frequency.exponentialRampToValueAtTime(f2 * m, t + len);
+          });
 
-          // getar halus supaya terdengar seperti suara hidup
-          const lfo = ac.createOscillator();
-          lfo.frequency.value = 6;
-          const lfoGain = ac.createGain();
-          lfoGain.gain.value = 12 * pitch;
+          // getar halus (vibrato) supaya terdengar hidup, bukan seperti bunyi beep
+          const lfo = a.createOscillator();
+          lfo.frequency.value = vib;
+          const lfoGain = a.createGain();
+          lfoGain.gain.value = vibDepth * 3; // satuan: cent
           lfo.connect(lfoGain);
-          lfoGain.connect(osc.frequency);
+          lfoGain.connect(o1.detune);
+          lfoGain.connect(o2.detune);
 
-          // filter yang digeser = bentuk mulut membuka lalu menutup
-          const f = ac.createBiquadFilter();
-          f.type = "bandpass";
-          f.Q.value = 3;
-          f.frequency.setValueAtTime(700 * formant, t);
-          f.frequency.exponentialRampToValueAtTime(
-            2200 * formant,
-            t + len * 0.35,
-          );
-          f.frequency.exponentialRampToValueAtTime(900 * formant, t + len);
+          // filter "vokal": menggeser bunyi dari "mi" ke "aw" seperti mulut membuka
+          const vowel = a.createBiquadFilter();
+          vowel.type = "peaking";
+          vowel.gain.value = 9;
+          vowel.Q.value = 2;
+          vowel.frequency.setValueAtTime(1100, t);
+          vowel.frequency.exponentialRampToValueAtTime(2400, t + len * 0.3);
+          vowel.frequency.exponentialRampToValueAtTime(1300, t + len);
+          const soft = a.createBiquadFilter();
+          soft.type = "lowpass";
+          soft.frequency.value = 4500;
 
-          // volume: naik cepat, lalu menghilang pelan
-          const g = ac.createGain();
-          g.gain.setValueAtTime(0.0001, t);
-          g.gain.exponentialRampToValueAtTime(1.4, t + 0.06);
-          g.gain.exponentialRampToValueAtTime(0.0001, t + len);
+          // volume: naik halus, turun pelan (tidak kaget di telinga)
+          const env = a.createGain();
+          env.gain.setValueAtTime(0.0001, t);
+          env.gain.exponentialRampToValueAtTime(peak, t + 0.04);
+          env.gain.exponentialRampToValueAtTime(0.0001, t + len);
 
-          osc.connect(f);
-          f.connect(g);
-          g.connect(ac.destination);
-          osc.start(t);
-          lfo.start(t);
-          osc.stop(t + len + 0.05);
-          lfo.stop(t + len + 0.05);
+          // trill: volume dikedip-kedipkan cepat = bunyi "brrp / mrrp"
+          const tr = a.createGain();
+          tr.gain.value = trill ? 0.55 : 1;
+          if (trill) {
+            const tl = a.createOscillator();
+            tl.frequency.value = trill;
+            const td = a.createGain();
+            td.gain.value = 0.45;
+            tl.connect(td);
+            td.connect(tr.gain);
+            tl.start(t);
+            tl.stop(t + len + 0.05);
+          }
+
+          o1.connect(vowel);
+          o2.connect(g2);
+          g2.connect(vowel);
+          vowel.connect(soft);
+          soft.connect(env);
+          env.connect(tr);
+          tr.connect(a.destination);
+          [o1, o2, lfo].forEach((o) => {
+            o.start(t);
+            o.stop(t + len + 0.05);
+          });
         } catch (e) {}
       }
+
+      // empat jenis suara siap pakai (p = tinggi nada, d = jeda mulai dalam detik)
+      const mew = (p = 1, d = 0) =>
+        voice({
+          f0: 620 * p,
+          f1: 1150 * p,
+          f2: 760 * p,
+          len: 0.42,
+          peak: 0.32,
+          delay: d,
+        });
+      const mrrp = (p = 1, d = 0) =>
+        voice({
+          f0: 420 * p,
+          f1: 640 * p,
+          f2: 560 * p,
+          len: 0.26,
+          peak: 0.3,
+          trill: 26,
+          delay: d,
+        });
+      const miaaw = (p = 1, d = 0) =>
+        voice({
+          f0: 520 * p,
+          f1: 980 * p,
+          f2: 540 * p,
+          len: 1.0,
+          peak: 0.3,
+          vib: 7,
+          vibDepth: 40,
+          delay: d,
+        });
+      const squeak = (p = 1, d = 0) =>
+        voice({
+          f0: 1000 * p,
+          f1: 1700 * p,
+          f2: 1200 * p,
+          len: 0.2,
+          peak: 0.22,
+          delay: d,
+        });
 
       /* ============ BACKGROUND ============ */
       for (let i = 0; i < 45; i++) {
@@ -852,7 +930,11 @@
       ];
 
       function poke(el, k) {
-        meow(k.pitch + Math.random() * 0.3, 0.38, 1.35);
+        // suara anak kucing: "mip!" kecil, kadang ditambah "mrrp"
+        const p = k.pitch / 1.9 + Math.random() * 0.15;
+        squeak(p);
+        if (Math.random() < 0.5) mrrp(p * 1.6, 0.16);
+
         try {
           navigator.vibrate && navigator.vibrate(20);
         } catch (e) {}
@@ -898,12 +980,12 @@
 
       function cry() {
         clearTimeout(timer);
-        clearTimeout(sadTimer);
         taps++;
         document.body.classList.add("crying");
         cap.textContent = cryLines[taps % cryLines.length];
-        meow(1, 0.7); // meong pertama
-        sadTimer = setTimeout(() => meow(0.82, 0.95), 800); // meong sedih yang lebih rendah
+        mew(1); // "mew!"
+        mew(0.92, 0.32); // "mew~" kedua
+        miaaw(0.85, 1); // "miaaaw~" panjang yang sedih dan bergetar
         try {
           navigator.vibrate && navigator.vibrate([40, 30, 40]);
         } catch (e) {}
